@@ -1,0 +1,15 @@
+# Credentials (never commit these!)
+credentials.json
+*.json
+
+# Python
+__pycache__/
+*.pyc
+.env
+
+# Output files
+concalls.csv
+
+# IDE
+.vscode/
+.idea/
