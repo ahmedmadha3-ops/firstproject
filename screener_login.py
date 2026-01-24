@@ -18,6 +18,9 @@ import logging
 from datetime import datetime
 import gspread
 from google.oauth2.service_account import Credentials
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+import hashlib
 
 # Suppress PDF parsing warnings
 logging.getLogger("pdfminer").setLevel(logging.ERROR)
@@ -26,25 +29,28 @@ logging.getLogger("pdfminer").setLevel(logging.ERROR)
 SHEET_NAME = "Screener Concalls"
 CREDENTIALS_FILE = "credentials.json"
 
+# Google Calendar settings
+CALENDAR_ID = "e9b665f1aa7c91203430bcad9af20c3df9d9f4aa45ffe455cb2be475396b1d07@group.calendar.google.com"
+
 
 def get_google_credentials():
     """Get Google credentials from file or environment variable."""
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive",
+        "https://www.googleapis.com/auth/calendar"
+    ]
+
     # Try environment variable first (for GitHub Actions)
     creds_b64 = os.environ.get("GOOGLE_CREDENTIALS_BASE64")
     if creds_b64:
         creds_json = base64.b64decode(creds_b64).decode('utf-8')
         creds_dict = json.loads(creds_json)
-        return Credentials.from_service_account_info(creds_dict, scopes=[
-            "https://www.googleapis.com/auth/spreadsheets",
-            "https://www.googleapis.com/auth/drive"
-        ])
+        return Credentials.from_service_account_info(creds_dict, scopes=scopes)
 
     # Fall back to local file
     if os.path.exists(CREDENTIALS_FILE):
-        return Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=[
-            "https://www.googleapis.com/auth/spreadsheets",
-            "https://www.googleapis.com/auth/drive"
-        ])
+        return Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=scopes)
 
     raise FileNotFoundError("No Google credentials found")
 
@@ -112,6 +118,118 @@ def write_to_google_sheets(concalls):
 
     print(f"Sheet URL: {sheet.url}")
     return sheet.url
+
+
+def sync_to_google_calendar(concalls):
+    """Sync concalls to Google Calendar with smart duplicate handling."""
+    print("\nSyncing to Google Calendar...")
+
+    creds = get_google_credentials()
+    service = build('calendar', 'v3', credentials=creds)
+
+    # Get existing events (future events only, don't touch past)
+    now = datetime.utcnow().isoformat() + 'Z'
+    existing_events = {}
+
+    try:
+        events_result = service.events().list(
+            calendarId=CALENDAR_ID,
+            timeMin=now,
+            maxResults=500,
+            singleEvents=True
+        ).execute()
+
+        for event in events_result.get('items', []):
+            # Use extendedProperties to store our unique ID
+            props = event.get('extendedProperties', {}).get('private', {})
+            if 'concall_id' in props:
+                existing_events[props['concall_id']] = event
+    except HttpError as e:
+        print(f"  Warning: Could not fetch existing events: {e}")
+
+    created = 0
+    updated = 0
+    skipped = 0
+
+    for c in concalls:
+        try:
+            # Parse date and time
+            date_str = c['date'] + " " + c['time']
+            start_dt = datetime.strptime(date_str, "%d %B %Y %I:%M:%S %p")
+
+            # Skip past events
+            if start_dt < datetime.now():
+                skipped += 1
+                continue
+
+            # Create unique ID (hash of company + date + time)
+            concall_id = hashlib.md5(f"{c['company']}_{c['date']}_{c['time']}".encode()).hexdigest()
+
+            # Build event description
+            description = f"""📞 Dial-in: {c['phone']}
+
+📅 Date: {c['date']}
+⏰ Time: {c['time']}
+
+📄 PDF Announcement:
+{c['pdf_url']}
+
+---
+Auto-synced from Screener.in"""
+
+            # Event body
+            event_body = {
+                'summary': f"📞 {c['company']} - Concall",
+                'description': description,
+                'start': {
+                    'dateTime': start_dt.strftime('%Y-%m-%dT%H:%M:%S'),
+                    'timeZone': 'Asia/Kolkata',
+                },
+                'end': {
+                    'dateTime': (start_dt.replace(hour=start_dt.hour + 1)).strftime('%Y-%m-%dT%H:%M:%S'),
+                    'timeZone': 'Asia/Kolkata',
+                },
+                'extendedProperties': {
+                    'private': {
+                        'concall_id': concall_id
+                    }
+                },
+                'reminders': {
+                    'useDefault': False,
+                    'overrides': [
+                        {'method': 'popup', 'minutes': 15},
+                        {'method': 'popup', 'minutes': 60},
+                    ],
+                },
+            }
+
+            if concall_id in existing_events:
+                # Update existing event if details changed
+                existing = existing_events[concall_id]
+                if (existing.get('summary') != event_body['summary'] or
+                    existing.get('description') != event_body['description']):
+                    service.events().update(
+                        calendarId=CALENDAR_ID,
+                        eventId=existing['id'],
+                        body=event_body
+                    ).execute()
+                    updated += 1
+                else:
+                    skipped += 1
+            else:
+                # Create new event
+                service.events().insert(
+                    calendarId=CALENDAR_ID,
+                    body=event_body
+                ).execute()
+                created += 1
+
+        except Exception as e:
+            print(f"  Error for {c['company']}: {e}")
+            continue
+
+    print(f"  Created: {created}, Updated: {updated}, Skipped: {skipped}")
+    return created, updated, skipped
 
 
 def extract_phone_from_pdf(pdf_url):
@@ -298,8 +416,11 @@ def main():
         # Write to Google Sheets
         sheet_url = write_to_google_sheets(concalls)
 
+        # Sync to Google Calendar
+        sync_to_google_calendar(concalls)
+
         print(f"\n{'='*60}")
-        print(f"Done! {len(concalls)} concalls written to Google Sheets")
+        print(f"Done! {len(concalls)} concalls synced to Sheets & Calendar")
         print(f"{'='*60}")
 
     except Exception as e:
