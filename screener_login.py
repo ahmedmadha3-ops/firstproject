@@ -48,6 +48,7 @@ CREDENTIALS_FILE = "credentials.json"
 
 # Google Calendar settings
 CALENDAR_ID = "e9b665f1aa7c91203430bcad9af20c3df9d9f4aa45ffe455cb2be475396b1d07@group.calendar.google.com"
+MAIN_CALENDAR_ID = "moonkanish@gmail.com"  # For My Stonks - copy to main calendar
 CONCALL_DURATION_HOURS = 1
 
 # Calendar color IDs (1-11): Lavender, Sage, Grape, Flamingo, Banana, Tangerine, Peacock, Graphite, Blueberry, Basil, Tomato
@@ -324,6 +325,32 @@ def get_watchlist_color(company: str, watchlists: dict[str, set[str]]) -> Option
     return None
 
 
+def is_my_stonks_company(company: str, watchlists: dict[str, set[str]]) -> bool:
+    """Check if a company is in the My Stonks watchlist.
+
+    Args:
+        company: Company name to check.
+        watchlists: Dictionary of watchlist names to company sets.
+
+    Returns:
+        True if company is in My Stonks watchlist.
+    """
+    if "My Stonks" not in watchlists:
+        return False
+
+    company_normalized = normalize_company_name(company)
+
+    for wl_company in watchlists["My Stonks"]:
+        wl_normalized = normalize_company_name(wl_company)
+        if (company_normalized == wl_normalized or
+            company_normalized.startswith(wl_normalized) or
+            wl_normalized.startswith(company_normalized) or
+            company_normalized in wl_normalized or
+            wl_normalized in company_normalized):
+            return True
+    return False
+
+
 def parse_concall_datetime(date_str: str, time_str: str) -> Optional[datetime]:
     """Parse concall date and time strings into a datetime object.
 
@@ -382,7 +409,7 @@ def sync_to_google_calendar(
             for idx, company in enumerate(companies):
                 overlap_color_map[f"{company}_{time_key}"] = CALENDAR_COLORS[idx % len(CALENDAR_COLORS)]
 
-    # Get existing events (future events only)
+    # Get existing events from concalls calendar (future events only)
     now_iso = now_utc().isoformat()
     existing_events: dict[str, dict] = {}
 
@@ -400,6 +427,23 @@ def sync_to_google_calendar(
                 existing_events[props['concall_id']] = event
     except HttpError as e:
         logger.warning(f"Could not fetch existing events: {e}")
+
+    # Get existing events from main calendar (for My Stonks deduplication)
+    main_calendar_events: dict[str, dict] = {}
+    try:
+        main_events_result = service.events().list(
+            calendarId=MAIN_CALENDAR_ID,
+            timeMin=now_iso,
+            maxResults=500,
+            singleEvents=True
+        ).execute()
+
+        for event in main_events_result.get('items', []):
+            props = event.get('extendedProperties', {}).get('private', {})
+            if 'concall_id' in props:
+                main_calendar_events[props['concall_id']] = event
+    except HttpError as e:
+        logger.warning(f"Could not fetch main calendar events: {e}")
 
     created = 0
     updated = 0
@@ -500,6 +544,20 @@ Auto-synced from Screener.in"""
                     body=event_body
                 ).execute()
                 created += 1
+
+            # Copy My Stonks events to main calendar if not already there
+            if is_my_stonks_company(c['company'], watchlists):
+                if concall_id not in main_calendar_events:
+                    try:
+                        # Create a copy for main calendar (keep same color)
+                        main_event_body = event_body.copy()
+                        service.events().insert(
+                            calendarId=MAIN_CALENDAR_ID,
+                            body=main_event_body
+                        ).execute()
+                        logger.info(f"Copied to main calendar: {c['company']}")
+                    except HttpError as e:
+                        logger.warning(f"Could not copy to main calendar: {c['company']}: {e}")
 
         except HttpError as e:
             logger.error(f"Calendar API error for {c['company']}: {e}")
