@@ -263,6 +263,18 @@ def scrape_watchlists(driver: webdriver.Chrome) -> dict[str, set[str]]:
     return watchlists
 
 
+def normalize_company_name(name: str) -> str:
+    """Normalize company name for matching."""
+    # Remove common suffixes and clean up
+    name = name.lower().strip()
+    # Remove common suffixes
+    for suffix in [' ltd', ' limited', ' pvt', ' private', ' inc', ' corp', ' llp', '.']:
+        name = name.replace(suffix, '')
+    # Remove extra spaces
+    name = ' '.join(name.split())
+    return name
+
+
 def get_watchlist_color(company: str, watchlists: dict[str, set[str]]) -> Optional[str]:
     """Get the calendar color for a company based on watchlist membership.
 
@@ -274,12 +286,20 @@ def get_watchlist_color(company: str, watchlists: dict[str, set[str]]) -> Option
         Color ID if company is in a watchlist, None otherwise.
         Priority: Core Watchlist (Graphite) > My Stonks (Tomato)
     """
+    company_normalized = normalize_company_name(company)
+
     # Check watchlists in priority order
     for watchlist_name, config in WATCHLISTS.items():
         if watchlist_name in watchlists:
-            # Check if company name matches (partial match for truncated names)
             for wl_company in watchlists[watchlist_name]:
-                if company.startswith(wl_company) or wl_company.startswith(company):
+                wl_normalized = normalize_company_name(wl_company)
+
+                # Multiple matching strategies
+                if (company_normalized == wl_normalized or
+                    company_normalized.startswith(wl_normalized) or
+                    wl_normalized.startswith(company_normalized) or
+                    company_normalized in wl_normalized or
+                    wl_normalized in company_normalized):
                     return config["color"]
     return None
 
