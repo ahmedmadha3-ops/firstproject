@@ -53,6 +53,12 @@ CONCALL_DURATION_HOURS = 1
 # Calendar color IDs (1-11): Lavender, Sage, Grape, Flamingo, Banana, Tangerine, Peacock, Graphite, Blueberry, Basil, Tomato
 CALENDAR_COLORS = ['1', '2', '3', '4', '5', '6', '7', '9', '10', '11']  # Skip 8 (Graphite)
 
+# Watchlist color assignments
+WATCHLIST_COLORS = {
+    "Core Watchlist": "8",   # Graphite
+    "My Stonks": "11",       # Tomato
+}
+
 # =============================================================================
 # LOGGING SETUP
 # =============================================================================
@@ -205,6 +211,76 @@ def write_to_google_sheets(concalls: list[dict]) -> str:
     return sheet.url
 
 
+def scrape_watchlists(driver: webdriver.Chrome) -> dict[str, set[str]]:
+    """Scrape user's watchlists from Screener.in.
+
+    Args:
+        driver: Logged-in Chrome WebDriver instance.
+
+    Returns:
+        Dictionary mapping watchlist names to sets of company names.
+    """
+    watchlists: dict[str, set[str]] = {}
+
+    for watchlist_name in WATCHLIST_COLORS.keys():
+        try:
+            # Navigate to watchlist page
+            # Screener.in watchlist URL format: /watchlist/{watchlist-name}/
+            slug = watchlist_name.lower().replace(" ", "-")
+            url = f"https://www.screener.in/watchlist/{slug}/"
+            driver.get(url)
+
+            WebDriverWait(driver, PAGE_LOAD_TIMEOUT).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, "table"))
+            )
+
+            # Extract company names from the watchlist table
+            companies = set()
+            rows = driver.find_elements(By.CSS_SELECTOR, "table tbody tr")
+            for row in rows:
+                try:
+                    # Company name is typically in the first cell
+                    name_cell = row.find_element(By.CSS_SELECTOR, "td a")
+                    company_name = name_cell.text.strip()
+                    if company_name:
+                        companies.add(company_name)
+                except NoSuchElementException:
+                    continue
+
+            watchlists[watchlist_name] = companies
+            logger.info(f"Watchlist '{watchlist_name}': {len(companies)} companies")
+
+        except TimeoutException:
+            logger.warning(f"Could not load watchlist '{watchlist_name}'")
+            watchlists[watchlist_name] = set()
+        except Exception as e:
+            logger.warning(f"Error scraping watchlist '{watchlist_name}': {e}")
+            watchlists[watchlist_name] = set()
+
+    return watchlists
+
+
+def get_watchlist_color(company: str, watchlists: dict[str, set[str]]) -> Optional[str]:
+    """Get the calendar color for a company based on watchlist membership.
+
+    Args:
+        company: Company name to check.
+        watchlists: Dictionary of watchlist names to company sets.
+
+    Returns:
+        Color ID if company is in a watchlist, None otherwise.
+        Priority: Core Watchlist (Graphite) > My Stonks (Tomato)
+    """
+    # Check watchlists in priority order
+    for watchlist_name, color_id in WATCHLIST_COLORS.items():
+        if watchlist_name in watchlists:
+            # Check if company name matches (partial match for truncated names)
+            for wl_company in watchlists[watchlist_name]:
+                if company.startswith(wl_company) or wl_company.startswith(company):
+                    return color_id
+    return None
+
+
 def parse_concall_datetime(date_str: str, time_str: str) -> Optional[datetime]:
     """Parse concall date and time strings into a datetime object.
 
@@ -223,21 +299,28 @@ def parse_concall_datetime(date_str: str, time_str: str) -> Optional[datetime]:
         return None
 
 
-def sync_to_google_calendar(concalls: list[dict]) -> tuple[int, int, int]:
+def sync_to_google_calendar(
+    concalls: list[dict],
+    watchlists: Optional[dict[str, set[str]]] = None
+) -> tuple[int, int, int]:
     """Sync concalls to Google Calendar with smart duplicate handling and color coding.
 
     Args:
         concalls: List of concall dictionaries.
+        watchlists: Optional dictionary of watchlist names to company sets for color coding.
 
     Returns:
         Tuple of (created, updated, skipped) counts.
     """
     logger.info("Syncing to Google Calendar...")
 
+    if watchlists is None:
+        watchlists = {}
+
     creds = get_google_credentials()
     service = build('calendar', 'v3', credentials=creds)
 
-    # Pre-process: group concalls by their start time to assign colors
+    # Pre-process: group concalls by their start time to assign colors for overlapping
     time_slots: dict[str, list[str]] = {}
     current_time = datetime.now()
 
@@ -249,12 +332,12 @@ def sync_to_google_calendar(concalls: list[dict]) -> tuple[int, int, int]:
                 time_slots[time_key] = []
             time_slots[time_key].append(c['company'])
 
-    # Create color mapping for overlapping events
-    color_map: dict[str, str] = {}
+    # Create color mapping for overlapping events (used as fallback)
+    overlap_color_map: dict[str, str] = {}
     for time_key, companies in time_slots.items():
         if len(companies) > 1:
             for idx, company in enumerate(companies):
-                color_map[f"{company}_{time_key}"] = CALENDAR_COLORS[idx % len(CALENDAR_COLORS)]
+                overlap_color_map[f"{company}_{time_key}"] = CALENDAR_COLORS[idx % len(CALENDAR_COLORS)]
 
     # Get existing events (future events only)
     now_iso = now_utc().isoformat()
@@ -299,9 +382,16 @@ def sync_to_google_calendar(concalls: list[dict]) -> tuple[int, int, int]:
             ).hexdigest()
 
             # Check for color assignment
+            # Priority: Watchlist color > Overlapping event color
             time_key = start_dt.strftime('%Y-%m-%d %H:%M')
             color_key = f"{c['company']}_{time_key}"
-            color_id = color_map.get(color_key)
+
+            # First check watchlist membership
+            color_id = get_watchlist_color(c['company'], watchlists)
+
+            # Fall back to overlap color if not in watchlist
+            if not color_id:
+                color_id = overlap_color_map.get(color_key)
 
             # Calculate end time (handles midnight rollover correctly)
             end_dt = start_dt + timedelta(hours=CONCALL_DURATION_HOURS)
@@ -695,8 +785,11 @@ def main() -> int:
         # Write to Google Sheets
         sheet_url = write_to_google_sheets(concalls)
 
-        # Sync to Google Calendar
-        created, updated, skipped = sync_to_google_calendar(concalls)
+        # Scrape watchlists for color coding
+        watchlists = scrape_watchlists(driver)
+
+        # Sync to Google Calendar with watchlist colors
+        created, updated, skipped = sync_to_google_calendar(concalls, watchlists)
 
         logger.info("=" * 60)
         logger.info(f"Done! {len(concalls)} concalls synced to Sheets & Calendar")
