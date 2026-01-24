@@ -53,10 +53,16 @@ CONCALL_DURATION_HOURS = 1
 # Calendar color IDs (1-11): Lavender, Sage, Grape, Flamingo, Banana, Tangerine, Peacock, Graphite, Blueberry, Basil, Tomato
 CALENDAR_COLORS = ['1', '2', '3', '4', '5', '6', '7', '9', '10', '11']  # Skip 8 (Graphite)
 
-# Watchlist color assignments
-WATCHLIST_COLORS = {
-    "Core Watchlist": "8",   # Graphite
-    "My Stonks": "11",       # Tomato
+# Watchlist URLs and color assignments
+WATCHLISTS = {
+    "Core Watchlist": {
+        "url": "https://www.screener.in/watchlist/2266795/",
+        "color": "8",   # Graphite
+    },
+    "My Stonks": {
+        "url": "https://www.screener.in/watchlist/4200428/",
+        "color": "11",  # Tomato
+    },
 }
 
 # =============================================================================
@@ -222,12 +228,9 @@ def scrape_watchlists(driver: webdriver.Chrome) -> dict[str, set[str]]:
     """
     watchlists: dict[str, set[str]] = {}
 
-    for watchlist_name in WATCHLIST_COLORS.keys():
+    for watchlist_name, config in WATCHLISTS.items():
         try:
-            # Navigate to watchlist page
-            # Screener.in watchlist URL format: /watchlist/{watchlist-name}/
-            slug = watchlist_name.lower().replace(" ", "-")
-            url = f"https://www.screener.in/watchlist/{slug}/"
+            url = config["url"]
             driver.get(url)
 
             WebDriverWait(driver, PAGE_LOAD_TIMEOUT).until(
@@ -272,12 +275,12 @@ def get_watchlist_color(company: str, watchlists: dict[str, set[str]]) -> Option
         Priority: Core Watchlist (Graphite) > My Stonks (Tomato)
     """
     # Check watchlists in priority order
-    for watchlist_name, color_id in WATCHLIST_COLORS.items():
+    for watchlist_name, config in WATCHLISTS.items():
         if watchlist_name in watchlists:
             # Check if company name matches (partial match for truncated names)
             for wl_company in watchlists[watchlist_name]:
                 if company.startswith(wl_company) or wl_company.startswith(company):
-                    return color_id
+                    return config["color"]
     return None
 
 
