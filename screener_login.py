@@ -51,18 +51,18 @@ CALENDAR_ID = "e9b665f1aa7c91203430bcad9af20c3df9d9f4aa45ffe455cb2be475396b1d07@
 CONCALL_DURATION_HOURS = 1
 
 # Calendar color IDs (1-11): Lavender, Sage, Grape, Flamingo, Banana, Tangerine, Peacock, Graphite, Blueberry, Basil, Tomato
-# Skip 5 (Banana) and 9 (Blueberry) - reserved for watchlists
-CALENDAR_COLORS = ['1', '2', '3', '4', '6', '7', '10', '11']  # For non-watchlist overlapping events
+# Reserved colors for watchlists - not used for general overlapping events
+CALENDAR_COLORS = ['1', '2', '3', '7', '8', '9', '10']  # Lavender, Sage, Grape, Peacock, Graphite, Blueberry, Basil
 
 # Watchlist URLs and color assignments
 WATCHLISTS = {
     "Core Watchlist": {
         "url": "https://www.screener.in/watchlist/2266795/",
-        "color": "5",   # Banana (yellow)
+        "colors": ["4", "6", "5"],  # Flamingo, Tangerine, Banana - cycles through these
     },
     "My Stonks": {
         "url": "https://www.screener.in/watchlist/4200428/",
-        "color": "9",   # Blueberry (blue)
+        "colors": ["11"],  # Tomato only
     },
 }
 
@@ -276,6 +276,10 @@ def normalize_company_name(name: str) -> str:
     return name
 
 
+# Track color indices for cycling through watchlist colors
+_watchlist_color_counters: dict[str, int] = {}
+
+
 def get_watchlist_color(company: str, watchlists: dict[str, set[str]]) -> Optional[str]:
     """Get the calendar color for a company based on watchlist membership.
 
@@ -285,23 +289,38 @@ def get_watchlist_color(company: str, watchlists: dict[str, set[str]]) -> Option
 
     Returns:
         Color ID if company is in a watchlist, None otherwise.
-        Priority: Core Watchlist (Graphite) > My Stonks (Tomato)
+        Priority: My Stonks (Tomato) > Core Watchlist (Flamingo/Tangerine/Banana)
     """
     company_normalized = normalize_company_name(company)
 
-    # Check watchlists in priority order
-    for watchlist_name, config in WATCHLISTS.items():
-        if watchlist_name in watchlists:
-            for wl_company in watchlists[watchlist_name]:
-                wl_normalized = normalize_company_name(wl_company)
+    # Check My Stonks first (higher priority)
+    for watchlist_name in ["My Stonks", "Core Watchlist"]:
+        if watchlist_name not in WATCHLISTS or watchlist_name not in watchlists:
+            continue
 
-                # Multiple matching strategies
-                if (company_normalized == wl_normalized or
-                    company_normalized.startswith(wl_normalized) or
-                    wl_normalized.startswith(company_normalized) or
-                    company_normalized in wl_normalized or
-                    wl_normalized in company_normalized):
-                    return config["color"]
+        config = WATCHLISTS[watchlist_name]
+        for wl_company in watchlists[watchlist_name]:
+            wl_normalized = normalize_company_name(wl_company)
+
+            # Multiple matching strategies
+            if (company_normalized == wl_normalized or
+                company_normalized.startswith(wl_normalized) or
+                wl_normalized.startswith(company_normalized) or
+                company_normalized in wl_normalized or
+                wl_normalized in company_normalized):
+
+                colors = config["colors"]
+                if len(colors) == 1:
+                    return colors[0]
+
+                # Cycle through colors for this watchlist
+                if watchlist_name not in _watchlist_color_counters:
+                    _watchlist_color_counters[watchlist_name] = 0
+
+                color_idx = _watchlist_color_counters[watchlist_name] % len(colors)
+                _watchlist_color_counters[watchlist_name] += 1
+                return colors[color_idx]
+
     return None
 
 
