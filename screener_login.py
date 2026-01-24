@@ -51,17 +51,18 @@ CALENDAR_ID = "e9b665f1aa7c91203430bcad9af20c3df9d9f4aa45ffe455cb2be475396b1d07@
 CONCALL_DURATION_HOURS = 1
 
 # Calendar color IDs (1-11): Lavender, Sage, Grape, Flamingo, Banana, Tangerine, Peacock, Graphite, Blueberry, Basil, Tomato
-CALENDAR_COLORS = ['1', '2', '3', '4', '5', '6', '7', '9', '10', '11']  # Skip 8 (Graphite)
+# Skip 5 (Banana) and 9 (Blueberry) - reserved for watchlists
+CALENDAR_COLORS = ['1', '2', '3', '4', '6', '7', '10', '11']  # For non-watchlist overlapping events
 
 # Watchlist URLs and color assignments
 WATCHLISTS = {
     "Core Watchlist": {
         "url": "https://www.screener.in/watchlist/2266795/",
-        "color": "8",   # Graphite
+        "color": "5",   # Banana (yellow)
     },
     "My Stonks": {
         "url": "https://www.screener.in/watchlist/4200428/",
-        "color": "11",  # Tomato
+        "color": "9",   # Blueberry (blue)
     },
 }
 
