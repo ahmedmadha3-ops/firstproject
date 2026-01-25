@@ -13,24 +13,60 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Check if already ran today
+        if: github.event.schedule == '30 13 * * *'
+        id: check-run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Check for successful runs in the last 14 hours
+          RECENT_SUCCESS=$(gh api repos/${{ github.repository }}/actions/workflows/update-concalls.yml/runs \
+            --jq '[.workflow_runs[] | select(.conclusion == "success" and .event == "schedule")] | .[0].created_at // empty')
+          
+          if [ -n "$RECENT_SUCCESS" ]; then
+            # Check if the successful run was within the last 14 hours
+            RECENT_TS=$(date -d "$RECENT_SUCCESS" +%s 2>/dev/null || date -j -f "%Y-%m-%dT%H:%M:%SZ" "$RECENT_SUCCESS" +%s)
+            NOW_TS=$(date +%s)
+            DIFF=$(( (NOW_TS - RECENT_TS) / 3600 ))
+            
+            if [ "$DIFF" -lt 14 ]; then
+              echo "Morning run succeeded $DIFF hours ago. Skipping backup run."
+              echo "skip=true" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+          fi
+          echo "No recent successful run found. Proceeding with backup."
+          echo "skip=false" >> $GITHUB_OUTPUT
+
+      - name: Exit if already ran
+        if: steps.check-run.outputs.skip == 'true'
+        run: |
+          echo "Skipping - already ran successfully today"
+          exit 0
+
       - name: Checkout repository
+        if: steps.check-run.outputs.skip != 'true'
         uses: actions/checkout@v4
 
       - name: Set up Python
+        if: steps.check-run.outputs.skip != 'true'
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Install Chrome
+        if: steps.check-run.outputs.skip != 'true'
         uses: browser-actions/setup-chrome@v1
         with:
           chrome-version: stable
 
       - name: Install dependencies
+        if: steps.check-run.outputs.skip != 'true'
         run: |
           pip install -r requirements.txt
 
       - name: Run concalls scraper
+        if: steps.check-run.outputs.skip != 'true'
         env:
           SCREENER_USERNAME: ${{ secrets.SCREENER_USERNAME }}
           SCREENER_PASSWORD: ${{ secrets.SCREENER_PASSWORD }}
@@ -39,6 +75,7 @@ jobs:
           python screener_login.py
 
       - name: Upload CSV backup
+        if: steps.check-run.outputs.skip != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: concalls-csv
@@ -47,7 +84,7 @@ jobs:
 
       # Email notification on success
       - name: Send success email
-        if: success()
+        if: success() && steps.check-run.outputs.skip != 'true'
         uses: dawidd6/action-send-mail@v3
         with:
           server_address: smtp.gmail.com
