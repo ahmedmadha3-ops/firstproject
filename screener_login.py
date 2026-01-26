@@ -369,6 +369,41 @@ def parse_concall_datetime(date_str: str, time_str: str) -> Optional[datetime]:
         return None
 
 
+def event_exists_in_calendar(
+    events: list[dict],
+    company: str,
+    start_dt: datetime
+) -> bool:
+    """Check if a similar event already exists in the calendar.
+
+    Args:
+        events: List of existing calendar events.
+        company: Company name to check.
+        start_dt: Event start datetime.
+
+    Returns:
+        True if a similar event exists (same time, similar company name).
+    """
+    company_normalized = normalize_company_name(company)
+    target_time = start_dt.strftime('%Y-%m-%dT%H:%M')
+
+    for event in events:
+        # Get event start time
+        event_start = event.get('start', {})
+        event_datetime = event_start.get('dateTime', '')
+
+        # Compare times (first 16 chars: YYYY-MM-DDTHH:MM)
+        if event_datetime[:16] == target_time:
+            # Check if summary contains company name
+            summary = event.get('summary', '').lower()
+            if company_normalized in summary or any(
+                word in summary for word in company_normalized.split() if len(word) > 3
+            ):
+                return True
+
+    return False
+
+
 def sync_to_google_calendar(
     concalls: list[dict],
     watchlists: Optional[dict[str, set[str]]] = None
@@ -428,8 +463,9 @@ def sync_to_google_calendar(
     except HttpError as e:
         logger.warning(f"Could not fetch existing events: {e}")
 
-    # Get existing events from main calendar (for My Stonks deduplication)
+    # Get existing events from main calendar (for duplicate detection)
     main_calendar_events: dict[str, dict] = {}
+    main_calendar_all_events: list[dict] = []  # All events for time-based matching
     try:
         main_events_result = service.events().list(
             calendarId=MAIN_CALENDAR_ID,
@@ -438,7 +474,8 @@ def sync_to_google_calendar(
             singleEvents=True
         ).execute()
 
-        for event in main_events_result.get('items', []):
+        main_calendar_all_events = main_events_result.get('items', [])
+        for event in main_calendar_all_events:
             props = event.get('extendedProperties', {}).get('private', {})
             if 'concall_id' in props:
                 main_calendar_events[props['concall_id']] = event
@@ -547,7 +584,13 @@ Auto-synced from Screener.in"""
 
             # Copy My Stonks events to main calendar if not already there
             if is_my_stonks_company(c['company'], watchlists):
-                if concall_id not in main_calendar_events:
+                # Check by concall_id first
+                if concall_id in main_calendar_events:
+                    logger.debug(f"Already in main calendar (by ID): {c['company']}")
+                # Then check by time and company name (catches manually created events)
+                elif event_exists_in_calendar(main_calendar_all_events, c['company'], start_dt):
+                    logger.info(f"Skipping duplicate in main calendar: {c['company']} at {start_dt}")
+                else:
                     try:
                         # Create a copy for main calendar (keep same color)
                         main_event_body = event_body.copy()
