@@ -114,22 +114,13 @@ def now_utc() -> datetime:
 
 
 def get_google_credentials() -> Credentials:
-    """Get Google credentials from file or environment variable.
-
-    Returns:
-        Google service account credentials with required scopes.
-
-    Raises:
-        FileNotFoundError: If no credentials are found.
-        ValueError: If credentials are invalid.
-    """
+    """Get Google credentials from file or environment variable."""
     scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive",
         "https://www.googleapis.com/auth/calendar"
     ]
 
-    # Try environment variable first (for GitHub Actions)
     creds_b64 = os.environ.get("GOOGLE_CREDENTIALS_BASE64")
     if creds_b64:
         try:
@@ -140,7 +131,6 @@ def get_google_credentials() -> Credentials:
         except (json.JSONDecodeError, ValueError) as e:
             raise ValueError(f"Invalid GOOGLE_CREDENTIALS_BASE64: {e}") from e
 
-    # Fall back to local file
     if os.path.exists(CREDENTIALS_FILE):
         logger.debug(f"Using credentials from {CREDENTIALS_FILE}")
         return Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=scopes)
@@ -152,20 +142,12 @@ def get_google_credentials() -> Credentials:
 
 
 def write_to_google_sheets(concalls: list[dict]) -> str:
-    """Write concalls data to Google Sheets.
-
-    Args:
-        concalls: List of concall dictionaries with keys: company, date, time, phone, pdf_url
-
-    Returns:
-        URL of the Google Sheet.
-    """
+    """Write concalls data to Google Sheets."""
     logger.info("Connecting to Google Sheets...")
 
     creds = get_google_credentials()
     client = gspread.authorize(creds)
 
-    # Try to open existing sheet or create new one
     try:
         sheet = client.open(SHEET_NAME)
         logger.info(f"Opened existing sheet: {SHEET_NAME}")
@@ -176,23 +158,19 @@ def write_to_google_sheets(concalls: list[dict]) -> str:
     worksheet = sheet.sheet1
     worksheet.clear()
 
-    # Prepare data
     headers = ["Company Name", "Date", "Time", "Phone Number", "PDF Link"]
     rows = [headers]
     for c in concalls:
         rows.append([c['company'], c['date'], c['time'], c['phone'], c['pdf_url']])
 
-    # Write all data
     logger.info(f"Writing {len(concalls)} rows...")
     worksheet.update(rows, value_input_option='RAW')
 
-    # Format header row (bold)
     worksheet.format('A1:E1', {
         'textFormat': {'bold': True},
         'backgroundColor': {'red': 0.9, 'green': 0.9, 'blue': 0.9}
     })
 
-    # Set column widths
     column_widths = [150, 130, 110, 280, 450]
     sheet.batch_update({
         "requests": [
@@ -212,7 +190,6 @@ def write_to_google_sheets(concalls: list[dict]) -> str:
         ]
     })
 
-    # Freeze header row
     worksheet.freeze(rows=1)
 
     logger.info(f"Sheet URL: {sheet.url}")
@@ -220,14 +197,7 @@ def write_to_google_sheets(concalls: list[dict]) -> str:
 
 
 def scrape_watchlists(driver: webdriver.Chrome) -> dict[str, set[str]]:
-    """Scrape user's watchlists from Screener.in.
-
-    Args:
-        driver: Logged-in Chrome WebDriver instance.
-
-    Returns:
-        Dictionary mapping watchlist names to sets of company names.
-    """
+    """Scrape user's watchlists from Screener.in."""
     watchlists: dict[str, set[str]] = {}
 
     for watchlist_name, config in WATCHLISTS.items():
@@ -239,12 +209,10 @@ def scrape_watchlists(driver: webdriver.Chrome) -> dict[str, set[str]]:
                 EC.presence_of_element_located((By.CSS_SELECTOR, "table"))
             )
 
-            # Extract company names from the watchlist table
             companies = set()
             rows = driver.find_elements(By.CSS_SELECTOR, "table tbody tr")
             for row in rows:
                 try:
-                    # Company name is typically in the first cell
                     name_cell = row.find_element(By.CSS_SELECTOR, "td a")
                     company_name = name_cell.text.strip()
                     if company_name:
@@ -267,34 +235,20 @@ def scrape_watchlists(driver: webdriver.Chrome) -> dict[str, set[str]]:
 
 def normalize_company_name(name: str) -> str:
     """Normalize company name for matching."""
-    # Remove common suffixes and clean up
     name = name.lower().strip()
-    # Remove common suffixes
     for suffix in [' ltd', ' limited', ' pvt', ' private', ' inc', ' corp', ' llp', '.']:
         name = name.replace(suffix, '')
-    # Remove extra spaces
     name = ' '.join(name.split())
     return name
 
 
-# Track color indices for cycling through watchlist colors
 _watchlist_color_counters: dict[str, int] = {}
 
 
 def get_watchlist_color(company: str, watchlists: dict[str, set[str]]) -> Optional[str]:
-    """Get the calendar color for a company based on watchlist membership.
-
-    Args:
-        company: Company name to check.
-        watchlists: Dictionary of watchlist names to company sets.
-
-    Returns:
-        Color ID if company is in a watchlist, None otherwise.
-        Priority: My Stonks (Tomato) > Core Watchlist (Flamingo/Tangerine/Banana)
-    """
+    """Get the calendar color for a company based on watchlist membership."""
     company_normalized = normalize_company_name(company)
 
-    # Check My Stonks first (higher priority)
     for watchlist_name in ["My Stonks", "Core Watchlist"]:
         if watchlist_name not in WATCHLISTS or watchlist_name not in watchlists:
             continue
@@ -303,7 +257,6 @@ def get_watchlist_color(company: str, watchlists: dict[str, set[str]]) -> Option
         for wl_company in watchlists[watchlist_name]:
             wl_normalized = normalize_company_name(wl_company)
 
-            # Multiple matching strategies
             if (company_normalized == wl_normalized or
                 company_normalized.startswith(wl_normalized) or
                 wl_normalized.startswith(company_normalized) or
@@ -314,7 +267,6 @@ def get_watchlist_color(company: str, watchlists: dict[str, set[str]]) -> Option
                 if len(colors) == 1:
                     return colors[0]
 
-                # Cycle through colors for this watchlist
                 if watchlist_name not in _watchlist_color_counters:
                     _watchlist_color_counters[watchlist_name] = 0
 
@@ -326,15 +278,7 @@ def get_watchlist_color(company: str, watchlists: dict[str, set[str]]) -> Option
 
 
 def is_my_stonks_company(company: str, watchlists: dict[str, set[str]]) -> bool:
-    """Check if a company is in the My Stonks watchlist.
-
-    Args:
-        company: Company name to check.
-        watchlists: Dictionary of watchlist names to company sets.
-
-    Returns:
-        True if company is in My Stonks watchlist.
-    """
+    """Check if a company is in the My Stonks watchlist."""
     if "My Stonks" not in watchlists:
         return False
 
@@ -352,20 +296,33 @@ def is_my_stonks_company(company: str, watchlists: dict[str, set[str]]) -> bool:
 
 
 def parse_concall_datetime(date_str: str, time_str: str) -> Optional[datetime]:
-    """Parse concall date and time strings into a datetime object.
-
-    Args:
-        date_str: Date string like "24 January 2026"
-        time_str: Time string like "9:30:00 AM"
-
-    Returns:
-        Parsed datetime or None if parsing fails.
-    """
+    """Parse concall date and time strings into a datetime object."""
     try:
         combined = f"{date_str} {time_str}"
         return datetime.strptime(combined, "%d %B %Y %I:%M:%S %p")
     except ValueError as e:
         logger.debug(f"Failed to parse datetime '{combined}': {e}")
+        return None
+
+
+def parse_calendar_datetime(dt_string: str) -> Optional[datetime]:
+    """Parse a calendar API datetime string (handles timezone).
+    
+    Args:
+        dt_string: DateTime string like '2026-01-27T10:30:00+05:30' or '2026-01-27T10:30:00Z'
+    
+    Returns:
+        Naive datetime (timezone stripped) or None if parsing fails.
+    """
+    if not dt_string:
+        return None
+    
+    try:
+        # Remove timezone info for comparison (we only care about local time)
+        # Handle formats: 2026-01-27T10:30:00+05:30, 2026-01-27T10:30:00Z, 2026-01-27T10:30:00
+        dt_clean = dt_string[:19]  # Take only YYYY-MM-DDTHH:MM:SS
+        return datetime.strptime(dt_clean, "%Y-%m-%dT%H:%M:%S")
+    except ValueError:
         return None
 
 
@@ -376,30 +333,35 @@ def event_exists_in_calendar(
 ) -> bool:
     """Check if a similar event already exists in the calendar.
 
-    Args:
-        events: List of existing calendar events.
-        company: Company name to check.
-        start_dt: Event start datetime.
-
-    Returns:
-        True if a similar event exists (same time, similar company name).
+    Matches if there's an event at the same time (within 5 minutes) with similar company name.
     """
     company_normalized = normalize_company_name(company)
-    target_time = start_dt.strftime('%Y-%m-%dT%H:%M')
+    company_words = [w for w in company_normalized.split() if len(w) > 3]
 
     for event in events:
         # Get event start time
         event_start = event.get('start', {})
-        event_datetime = event_start.get('dateTime', '')
+        event_datetime_str = event_start.get('dateTime', '')
+        
+        event_dt = parse_calendar_datetime(event_datetime_str)
+        if not event_dt:
+            continue
 
-        # Compare times (first 16 chars: YYYY-MM-DDTHH:MM)
-        if event_datetime[:16] == target_time:
-            # Check if summary contains company name
+        # Compare times (within 5 minutes)
+        time_diff = abs((event_dt - start_dt).total_seconds())
+        if time_diff <= 300:  # 5 minutes tolerance
             summary = event.get('summary', '').lower()
-            if company_normalized in summary or any(
-                word in summary for word in company_normalized.split() if len(word) > 3
-            ):
+            
+            # Check if company name or significant words appear in summary
+            if company_normalized in summary:
+                logger.info(f"Found exact match in main calendar: '{summary}' matches '{company}'")
                 return True
+            
+            # Check if any significant word from company name is in summary
+            for word in company_words:
+                if word in summary:
+                    logger.info(f"Found word match in main calendar: '{word}' in '{summary}' for '{company}'")
+                    return True
 
     return False
 
@@ -408,15 +370,7 @@ def sync_to_google_calendar(
     concalls: list[dict],
     watchlists: Optional[dict[str, set[str]]] = None
 ) -> tuple[int, int, int]:
-    """Sync concalls to Google Calendar with smart duplicate handling and color coding.
-
-    Args:
-        concalls: List of concall dictionaries.
-        watchlists: Optional dictionary of watchlist names to company sets for color coding.
-
-    Returns:
-        Tuple of (created, updated, skipped) counts.
-    """
+    """Sync concalls to Google Calendar with smart duplicate handling and color coding."""
     logger.info("Syncing to Google Calendar...")
 
     if watchlists is None:
@@ -425,7 +379,6 @@ def sync_to_google_calendar(
     creds = get_google_credentials()
     service = build('calendar', 'v3', credentials=creds)
 
-    # Pre-process: group concalls by their start time to assign colors for overlapping
     time_slots: dict[str, list[str]] = {}
     current_time = datetime.now()
 
@@ -437,14 +390,12 @@ def sync_to_google_calendar(
                 time_slots[time_key] = []
             time_slots[time_key].append(c['company'])
 
-    # Create color mapping for overlapping events (used as fallback)
     overlap_color_map: dict[str, str] = {}
     for time_key, companies in time_slots.items():
         if len(companies) > 1:
             for idx, company in enumerate(companies):
                 overlap_color_map[f"{company}_{time_key}"] = CALENDAR_COLORS[idx % len(CALENDAR_COLORS)]
 
-    # Get existing events from concalls calendar (future events only)
     now_iso = now_utc().isoformat()
     existing_events: dict[str, dict] = {}
 
@@ -465,7 +416,7 @@ def sync_to_google_calendar(
 
     # Get existing events from main calendar (for duplicate detection)
     main_calendar_events: dict[str, dict] = {}
-    main_calendar_all_events: list[dict] = []  # All events for time-based matching
+    main_calendar_all_events: list[dict] = []
     try:
         main_events_result = service.events().list(
             calendarId=MAIN_CALENDAR_ID,
@@ -475,6 +426,8 @@ def sync_to_google_calendar(
         ).execute()
 
         main_calendar_all_events = main_events_result.get('items', [])
+        logger.info(f"Found {len(main_calendar_all_events)} events in main calendar")
+        
         for event in main_calendar_all_events:
             props = event.get('extendedProperties', {}).get('private', {})
             if 'concall_id' in props:
@@ -494,33 +447,25 @@ def sync_to_google_calendar(
             skipped += 1
             continue
 
-        # Skip past events
         if start_dt < current_time:
             skipped += 1
             continue
 
         try:
-            # Create unique ID (hash of company + date + time)
             concall_id = hashlib.md5(
                 f"{c['company']}_{c['date']}_{c['time']}".encode()
             ).hexdigest()
 
-            # Check for color assignment
-            # Priority: Watchlist color > Overlapping event color
             time_key = start_dt.strftime('%Y-%m-%d %H:%M')
             color_key = f"{c['company']}_{time_key}"
 
-            # First check watchlist membership
             color_id = get_watchlist_color(c['company'], watchlists)
 
-            # Fall back to overlap color if not in watchlist
             if not color_id:
                 color_id = overlap_color_map.get(color_key)
 
-            # Calculate end time (handles midnight rollover correctly)
             end_dt = start_dt + timedelta(hours=CONCALL_DURATION_HOURS)
 
-            # Build event description
             description = f"""📞 Dial-in: {c['phone']}
 
 📅 Date: {c['date']}
@@ -532,7 +477,6 @@ def sync_to_google_calendar(
 ---
 Auto-synced from Screener.in"""
 
-            # Event body
             event_body = {
                 'summary': f"📞 {c['company']} - Concall",
                 'description': description,
@@ -558,7 +502,6 @@ Auto-synced from Screener.in"""
                 },
             }
 
-            # Add color if there are overlapping events
             if color_id:
                 event_body['colorId'] = color_id
 
@@ -584,15 +527,14 @@ Auto-synced from Screener.in"""
 
             # Copy My Stonks events to main calendar if not already there
             if is_my_stonks_company(c['company'], watchlists):
-                # Check by concall_id first
+                # Check by concall_id first (created by this script)
                 if concall_id in main_calendar_events:
-                    logger.debug(f"Already in main calendar (by ID): {c['company']}")
-                # Then check by time and company name (catches manually created events)
+                    logger.info(f"Already in main calendar (by ID): {c['company']}")
+                # Check by time and company name (catches any existing events)
                 elif event_exists_in_calendar(main_calendar_all_events, c['company'], start_dt):
                     logger.info(f"Skipping duplicate in main calendar: {c['company']} at {start_dt}")
                 else:
                     try:
-                        # Create a copy for main calendar (keep same color)
                         main_event_body = event_body.copy()
                         service.events().insert(
                             calendarId=MAIN_CALENDAR_ID,
@@ -614,32 +556,21 @@ Auto-synced from Screener.in"""
 
 
 def extract_phone_from_pdf(pdf_url: str, session: Optional[requests.Session] = None) -> str:
-    """Download PDF and extract phone numbers.
-
-    Args:
-        pdf_url: URL of the PDF to download.
-        session: Optional requests session with retry logic.
-
-    Returns:
-        Extracted phone number(s) or error message.
-    """
+    """Download PDF and extract phone numbers."""
     if session is None:
         session = get_requests_session()
 
     tmp_path = None
 
     try:
-        # Download PDF with retry logic
         headers = {"User-Agent": "Mozilla/5.0 (compatible; ConcallsBot/1.0)"}
         response = session.get(pdf_url, headers=headers, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
 
-        # Save to temp file
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
             tmp.write(response.content)
             tmp_path = tmp.name
 
-        # Extract text from PDF
         text = ""
         with pdfplumber.open(tmp_path) as pdf:
             for page in pdf.pages:
@@ -647,13 +578,12 @@ def extract_phone_from_pdf(pdf_url: str, session: Optional[requests.Session] = N
                 if page_text:
                     text += page_text + "\n"
 
-        # Find phone numbers using multiple patterns
         phone_patterns = [
-            r'\+91[-\s]?\d{2}[-\s]?\d{4}[-\s]?\d{4}',  # +91 22 6280 1234
-            r'\+91[-\s]?\d{10}',                         # +91 9876543210
-            r'91[-\s]?\d{2}[-\s]?\d{4}[-\s]?\d{4}',     # 91 22 6280 1234
-            r'\d{4}[-\s]?\d{3}[-\s]?\d{4}',             # 1800 123 4567
-            r'\d{2,4}[-\s]?\d{4}[-\s]?\d{4}',           # 22 6280 1234
+            r'\+91[-\s]?\d{2}[-\s]?\d{4}[-\s]?\d{4}',
+            r'\+91[-\s]?\d{10}',
+            r'91[-\s]?\d{2}[-\s]?\d{4}[-\s]?\d{4}',
+            r'\d{4}[-\s]?\d{3}[-\s]?\d{4}',
+            r'\d{2,4}[-\s]?\d{4}[-\s]?\d{4}',
         ]
 
         phones = []
@@ -661,7 +591,6 @@ def extract_phone_from_pdf(pdf_url: str, session: Optional[requests.Session] = N
             matches = re.findall(pattern, text)
             phones.extend(matches)
 
-        # Remove duplicates preserving order
         unique_phones = list(dict.fromkeys(phones))
         if unique_phones:
             return "; ".join(unique_phones[:3])
@@ -674,7 +603,6 @@ def extract_phone_from_pdf(pdf_url: str, session: Optional[requests.Session] = N
         logger.debug(f"PDF extraction error for {pdf_url}: {e}")
         return f"Error: {str(e)[:30]}"
     finally:
-        # Clean up temp file
         if tmp_path and os.path.exists(tmp_path):
             try:
                 os.unlink(tmp_path)
@@ -683,11 +611,7 @@ def extract_phone_from_pdf(pdf_url: str, session: Optional[requests.Session] = N
 
 
 def create_chrome_driver() -> webdriver.Chrome:
-    """Create a configured Chrome WebDriver instance.
-
-    Returns:
-        Configured Chrome WebDriver.
-    """
+    """Create a configured Chrome WebDriver instance."""
     options = Options()
     options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
@@ -699,21 +623,11 @@ def create_chrome_driver() -> webdriver.Chrome:
 
 
 def login_to_screener(driver: webdriver.Chrome, username: str, password: str) -> bool:
-    """Login to Screener.in.
-
-    Args:
-        driver: Chrome WebDriver instance.
-        username: Screener username.
-        password: Screener password.
-
-    Returns:
-        True if login successful, False otherwise.
-    """
+    """Login to Screener.in."""
     logger.info("Logging in to Screener.in...")
     driver.get("https://www.screener.in/login/")
 
     try:
-        # Wait for login form
         WebDriverWait(driver, PAGE_LOAD_TIMEOUT).until(
             EC.presence_of_element_located((By.NAME, "username"))
         )
@@ -724,7 +638,6 @@ def login_to_screener(driver: webdriver.Chrome, username: str, password: str) ->
         login_btn = driver.find_element(By.CSS_SELECTOR, "button[type='submit']")
         driver.execute_script("arguments[0].click();", login_btn)
 
-        # Wait for redirect
         time.sleep(3)
 
         if "login" in driver.current_url.lower():
@@ -743,15 +656,7 @@ def login_to_screener(driver: webdriver.Chrome, username: str, password: str) ->
 
 
 def scrape_concalls_page(driver: webdriver.Chrome, page: int) -> list[dict]:
-    """Scrape a single page of concalls.
-
-    Args:
-        driver: Chrome WebDriver instance.
-        page: Page number to scrape.
-
-    Returns:
-        List of concall dictionaries from this page.
-    """
+    """Scrape a single page of concalls."""
     url = f"https://www.screener.in/concalls/upcoming/?p={page}"
     driver.get(url)
 
@@ -776,7 +681,6 @@ def scrape_concalls_page(driver: webdriver.Chrome, page: int) -> list[dict]:
                 date = tds[0].text.strip()
                 time_str = tds[1].text.strip()
 
-                # Get PDF link
                 pdf_url = ""
                 links = th.find_elements(By.TAG_NAME, "a")
                 for link in links:
@@ -800,14 +704,7 @@ def scrape_concalls_page(driver: webdriver.Chrome, page: int) -> list[dict]:
 
 
 def scrape_all_concalls(driver: webdriver.Chrome) -> list[dict]:
-    """Scrape all concalls up to the target count.
-
-    Args:
-        driver: Chrome WebDriver instance.
-
-    Returns:
-        List of unique concall dictionaries.
-    """
+    """Scrape all concalls up to the target count."""
     logger.info(f"Fetching up to {TARGET_CONCALL_COUNT} concalls...")
 
     all_concalls = []
@@ -823,7 +720,6 @@ def scrape_all_concalls(driver: webdriver.Chrome) -> list[dict]:
         all_concalls.extend(page_concalls)
         page += 1
 
-    # Remove duplicates (same company + date + time)
     seen = set()
     unique_concalls = []
     for c in all_concalls:
@@ -838,11 +734,7 @@ def scrape_all_concalls(driver: webdriver.Chrome) -> list[dict]:
 
 
 def extract_all_phone_numbers(concalls: list[dict]) -> None:
-    """Extract phone numbers from all concall PDFs.
-
-    Args:
-        concalls: List of concall dictionaries (modified in place).
-    """
+    """Extract phone numbers from all concall PDFs."""
     logger.info("Extracting phone numbers from PDFs...")
     session = get_requests_session()
 
@@ -853,11 +745,7 @@ def extract_all_phone_numbers(concalls: list[dict]) -> None:
 
 
 def sort_concalls_by_datetime(concalls: list[dict]) -> None:
-    """Sort concalls by date and time (earliest first).
-
-    Args:
-        concalls: List of concall dictionaries (modified in place).
-    """
+    """Sort concalls by date and time (earliest first)."""
     def get_sort_key(c: dict) -> datetime:
         dt = parse_concall_datetime(c['date'], c['time'])
         return dt if dt else datetime.max
@@ -867,15 +755,7 @@ def sort_concalls_by_datetime(concalls: list[dict]) -> None:
 
 
 def save_to_csv(concalls: list[dict], filename: str = "concalls.csv") -> str:
-    """Save concalls to CSV file.
-
-    Args:
-        concalls: List of concall dictionaries.
-        filename: Output filename.
-
-    Returns:
-        Path to saved file.
-    """
+    """Save concalls to CSV file."""
     with open(filename, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(["Company Name", "Date", "Time", "Phone Number", "PDF Link"])
@@ -887,12 +767,7 @@ def save_to_csv(concalls: list[dict], filename: str = "concalls.csv") -> str:
 
 
 def main() -> int:
-    """Main entry point for the concalls scraper.
-
-    Returns:
-        Exit code (0 for success, 1 for failure).
-    """
-    # Validate credentials
+    """Main entry point for the concalls scraper."""
     username = os.environ.get("SCREENER_USERNAME")
     password = os.environ.get("SCREENER_PASSWORD")
 
@@ -903,36 +778,22 @@ def main() -> int:
     driver = None
 
     try:
-        # Initialize browser
         driver = create_chrome_driver()
 
-        # Login
         if not login_to_screener(driver, username, password):
             return 1
 
-        # Scrape concalls
         concalls = scrape_all_concalls(driver)
 
         if not concalls:
             logger.error("No concalls found")
             return 1
 
-        # Extract phone numbers
         extract_all_phone_numbers(concalls)
-
-        # Sort by date
         sort_concalls_by_datetime(concalls)
-
-        # Save to CSV (backup)
         save_to_csv(concalls)
-
-        # Write to Google Sheets
         sheet_url = write_to_google_sheets(concalls)
-
-        # Scrape watchlists for color coding
         watchlists = scrape_watchlists(driver)
-
-        # Sync to Google Calendar with watchlist colors
         created, updated, skipped = sync_to_google_calendar(concalls, watchlists)
 
         logger.info("=" * 60)
