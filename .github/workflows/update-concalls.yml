@@ -89,11 +89,11 @@ jobs:
         with:
           server_address: smtp.gmail.com
           server_port: 587
-          username: ${{ secrets.EMAIL_USERNAME }}
-          password: ${{ secrets.EMAIL_PASSWORD }}
+          username: ${{ secrets.SMTP_USERNAME }}
+          password: ${{ secrets.SMTP_PASSWORD }}
           subject: ✅ Concalls Sync Completed - ${{ github.run_id }}
-          to: moonkanish@gmail.com
-          from: Concalls Bot <${{ secrets.EMAIL_USERNAME }}>
+          to: ahmedmadha3@gmail.com
+          from: Concalls Bot <ahmedmadha3@gmail.com>
           body: |
             Daily concalls sync completed successfully!
 
