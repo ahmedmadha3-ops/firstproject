@@ -81,4 +81,3 @@ jobs:
           name: concalls-csv
           path: concalls.csv
           retention-days: 7
-
